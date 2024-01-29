@@ -174,7 +174,7 @@ if __name__ == '__main__':
             os.path.join(opt.result_path_outside, 'val_classifier.log'), ['epoch', 'loss', 'acc'])
     
     
-    
+
     # inside 모델 불러오기
     model_inside, parameters_inside = generate_model(opt)
     weights = [1, 2, 4, 2, 4]
