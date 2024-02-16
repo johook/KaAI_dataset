@@ -396,17 +396,17 @@ if __name__ == '__main__':
                 """
                 Consider only flir4(forward) direction
                 """
-                # if not opt.no_cuda:
-                #     targets_out = targets_out['flir4'].cuda(non_blocking=True)
+                if not opt.no_cuda:
+                    targets_out = targets_out['flir4'].cuda(non_blocking=True)
 
-                # # inputs_out = Variable(inputs_out)
-                # #targets_out = Variable(targets_out)
+                # inputs_out = Variable(inputs_out)
+                #targets_out = Variable(targets_out)
                     
-                # inputs_out = inputs_out['flir4'].to(device)
-                # targets_out = targets_out.to(device)
+                inputs_out = inputs_out['flir4'].to(device)
+                targets_out = targets_out.to(device)
                 
-                # outputs_out = model_outside(inputs_out)
-                # loss_out = criterion_outside(outputs_out, targets_out)
+                outputs_out = model_outside(inputs_out)
+                loss_out = criterion_outside(outputs_out, targets_out)
                 
 
                 """
@@ -416,25 +416,27 @@ if __name__ == '__main__':
                 # 각 방향별 훈련 결과와 가중치 적용
 
                 
-                weighted_outputs = []
-                total_loss_out =0
-                for direction in ['flir4', 'flir1', 'flir2', 'flir3']:
-                    if not opt.no_cuda:
-                        targets_out = targets_out[direction].cuda(non_blocking=True)
-                    inputs_outs = inputs_out[direction].to(device)
-                    targets_outs = targets_out[direction].to(device)
+                # weighted_outputs = []
+                # total_loss_out =0
+                # for direction in ['flir4', 'flir1', 'flir2', 'flir3']:
+                #     if not opt.no_cuda:
+                #         targets_out_no = targets_out[direction].cuda(non_blocking=True)
+                #     inputs_outs = inputs_out[direction].to(device)
+                #     targets_outs = targets_out_no.to(device)
                     
-                    # 각 방향별 모델 실행
-                    outputs_out = model_outside(inputs_outs)
-                    loss_out = criterion_outside(outputs_out, targets_outs)
-                    if direction == 'flir4':
-                        total_loss_out += loss_out * 2
+                #     # 각 방향별 모델 실행
+                #     outputs_out = model_outside(inputs_outs)
+                #     loss_out = criterion_outside(outputs_out, targets_outs)
+                #     if direction == 'flir4':
+                #         total_loss_out += loss_out * 2
+                #     else:
+                #         total_loss_out+= loss_out
                     
                     
-                    weighted_outputs.append(outputs_out)
+                #     weighted_outputs.append(outputs_out)
 
-                # 가중치가 적용된 출력을 합침
-                outputs_out_combined = torch.sum(torch.stack(weighted_outputs), dim=0)
+                # # 가중치가 적용된 출력을 합침
+                # outputs_out_combined = torch.sum(torch.stack(weighted_outputs), dim=0)
 
                 
 
@@ -454,17 +456,16 @@ if __name__ == '__main__':
 
                 # # 어텐션 적용
                 # outputs_out_combined, attention_weights = attention_module(direction_outputs_stack)
-
-                # # 통합된 출력을 최종 분류기에 입력
-                # output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
+                
 
 
 
                 My_Conv_classifier.train()
                 # classifier 훈련 과정 실행
-                # output = My_Conv_classifier(outputs_in_not_fc, outputs_out)
+                output = My_Conv_classifier(outputs_in_not_fc, outputs_out)
                 # Simply Consider 4 direction
-                output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
+                # output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
+                # output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
                 loss_classifier = criterion_classifier(output, targets_in)
                 acc = calculate_accuracy(output, targets_in)
                 avg_acc.append(acc)
@@ -472,7 +473,7 @@ if __name__ == '__main__':
                 
                 # loss update
                 losses_inside_train.update(loss_in.item(), inputs_in.size(0))
-                losses_outside_train.update(loss_out.item(), inputs_out['flir4'].size(0))
+                losses_outside_train.update(loss_out.item(), inputs_out.size(0))
                 
                 accuracies_inside_train.update(acc_in, inputs_in.size(0))
                 
@@ -482,7 +483,7 @@ if __name__ == '__main__':
                 optimizer_classifier.zero_grad()
                 
                 loss_in.backward(retain_graph=True)
-                total_loss_out.backward(retain_graph=True)
+                loss_out.backward(retain_graph=True)
                 loss_classifier.backward()
                 
                 optimizer_inside.step()

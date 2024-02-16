@@ -387,7 +387,8 @@ class Brain4cars_Outside(data.Dataset):
 
         clips = {}
         targets = {}
-        directions = ['flir4', 'flir1', 'flir2', 'flir3']
+        # directions = ['flir4', 'flir1', 'flir2', 'flir3']
+        directions = ['flir4']
 
         for direction in directions:
             video_dir_path = os.path.join(path, direction)
@@ -395,12 +396,11 @@ class Brain4cars_Outside(data.Dataset):
             target_frames = self.loader(video_dir_path, target_idc)
 
             # Apply horizontal flip and target change only for flir4 and flir3
-            if direction in ['flir4', 'flir3']:
-                if self.horizontal_flip is not None:
-                    p = random.random()
-                    if p < 0.5:
-                        video_frames = [self.horizontal_flip(img) for img in video_frames]
-                        target_frames = [self.horizontal_flip(img) for img in target_frames]
+            if self.horizontal_flip is not None:
+                p = random.random()
+                if p < 0.5:
+                    video_frames = [self.horizontal_flip(img) for img in video_frames]
+                    target_frames = [self.horizontal_flip(img) for img in target_frames]
 
             if self.spatial_transform is not None:
                 self.spatial_transform.randomize_parameters()
@@ -413,6 +413,11 @@ class Brain4cars_Outside(data.Dataset):
                 target_frames = [self.target_transform(img) for img in target_frames]
             target_frames = torch.stack(target_frames, 0).permute(1, 0, 2, 3).squeeze()
             targets[direction] = target_frames
+
+            # 중간 데이터 삭제
+            del video_frames
+            del target_frames
+            torch.cuda.empty_cache()  # GPU 캐시 메모리 정리
 
         return clips, targets
 

@@ -26,6 +26,10 @@ wheels/
 *.egg
 datasets/annotation/face_camera
 datasets/annotation/road_camera
+datasets/annotation_kaai/face_camera
+datasets/annotation_kaai/road_camera
+datasets/annotation_kaai/Gaze&CAN
+datasets/annotation_kaai/road_camera_image
 inresults_0.84/
 outresults_0.84/
 road_camera_image/

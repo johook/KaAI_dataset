@@ -15,8 +15,8 @@ CUDA_VISIBLE_DEVICES=0 python real_model_total_original.py \
 			   --model resnet \
 			   --model_depth 50 \
 			   --resnet_shortcut B \
-			   --batch_size 4 \
-			   --n_threads 4 \
+			   --batch_size 16 \
+			   --n_threads 8 \
 			   --checkpoint 5  \
 			   --n_epochs 40 \
 			   --resnext_cardinality 32 \
@@ -25,7 +25,7 @@ CUDA_VISIBLE_DEVICES=0 python real_model_total_original.py \
 			   --train_crop 'driver focus'\
 			   --n_scales_inside 3 \
 			   --n_scales_outside 1 \
-			   --learning_rate 0.01 \
+			   --learning_rate 0.0005 \
 			   --n_fold 0 \
 			   --sample_duration_inside 16 \
 			   --sample_duration_outside 5 \
