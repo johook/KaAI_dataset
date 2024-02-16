@@ -44,7 +44,7 @@ def get_default_image_loader():
 def video_loader_inside(video_dir_path, frame_indices, image_loader):
     video = []
     for i in frame_indices:
-        image_path = os.path.join(video_dir_path, 'image-{:04d}.png'.format(i))
+        image_path = os.path.join(video_dir_path, '{:06d}.png'.format(i))
         if os.path.exists(image_path):
             video.append(image_loader(image_path))
         else:
@@ -154,7 +154,7 @@ def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video, e
         # count in the dir
         l = os.listdir(video_path)
         # If there are other files (e.g. original videos) besides the images in the folder, please abstract.
-        n_frames = len(l)-2
+        n_frames = len(l)-1
 
         # if n_frames < 16 + 25*(end_second-1):
         #     print('Video is too short: %s'%video_path)
@@ -210,7 +210,7 @@ def make_dataset_outside(root_path, annotation_path, subset, n_samples_for_each_
 
 #        n_frames = annotations[i]['n_frames']
         # count in the dir
-        l = os.listdir(video_path)
+        l = os.listdir(video_path+'flir4')
         # If there are other files (e.g. original videos) besides the images in the folder, please abstract.
         n_frames = len(l)-1
 
@@ -310,6 +310,7 @@ class Brain4cars_Inside(data.Dataset):
                 target = 2
 
         return clip, target
+    
     def __len__(self):
         return len(self.data)
 
@@ -344,32 +345,78 @@ class Brain4cars_Outside(data.Dataset):
         Returns:
             tuple: (image, target) where target is an image.
         """
-        path = self.data[index]['video']
+        # 원본
+        # path = self.data[index]['video']
 
-        frame_indices = self.data[index]['frame_indices']
-        h_flip = False
+        # frame_indices = self.data[index]['frame_indices']
 
-        if self.temporal_transform is not None:
-            frame_indices,target_idc = self.temporal_transform(frame_indices)
-        clip = self.loader(path, frame_indices)
-        target = self.loader(path, target_idc)
 
-        if self.horizontal_flip is not None:
-            p = random.random()
-            if p < 0.5:
-                clip = [self.horizontal_flip(img) for img in clip]
-                target = [self.horizontal_flip(img) for img in target]
+        # h_flip = False
 
-        if self.spatial_transform is not None:
-            self.spatial_transform.randomize_parameters()
-            clip = [self.spatial_transform(img) for img in clip]
-        clip = torch.stack(clip, 0)
+        # if self.temporal_transform is not None:
+        #     frame_indices,target_idc = self.temporal_transform(frame_indices)
+        # clip = self.loader(path, frame_indices)
+        # target = self.loader(path, target_idc)
 
-        if self.target_transform is not None:
-            target = [self.target_transform(img) for img in target]
-        target = torch.stack(target, 0).permute(1, 0, 2, 3).squeeze()
+        # if self.horizontal_flip is not None:
+        #     p = random.random()
+        #     if p < 0.5:
+        #         clip = [self.horizontal_flip(img) for img in clip]
+        #         target = [self.horizontal_flip(img) for img in target]
+
+        # if self.spatial_transform is not None:
+        #     self.spatial_transform.randomize_parameters()
+        #     clip = [self.spatial_transform(img) for img in clip]
+        # clip = torch.stack(clip, 0)
+
+        # if self.target_transform is not None:
+        #     target = [self.target_transform(img) for img in target]
+        # target = torch.stack(target, 0).permute(1, 0, 2, 3).squeeze()
             
 
-        return clip, target
+        # return clip, target
+
+        #4방향
+        
+        video_data = self.data[index]
+        path = video_data['video']
+        frame_indices = video_data['frame_indices']
+
+        if self.temporal_transform is not None:
+            frame_indices, target_idc = self.temporal_transform(frame_indices)
+
+        clips = {}
+        targets = {}
+        directions = ['flir4', 'flir1', 'flir2', 'flir3']
+
+        for direction in directions:
+            video_dir_path = os.path.join(path, direction)
+            video_frames = self.loader(video_dir_path, frame_indices)
+            target_frames = self.loader(video_dir_path, target_idc)
+
+            # Apply horizontal flip and target change only for flir4 and flir3
+            if direction in ['flir4', 'flir3']:
+                if self.horizontal_flip is not None:
+                    p = random.random()
+                    if p < 0.5:
+                        video_frames = [self.horizontal_flip(img) for img in video_frames]
+                        target_frames = [self.horizontal_flip(img) for img in target_frames]
+
+            if self.spatial_transform is not None:
+                self.spatial_transform.randomize_parameters()
+                video_frames = [self.spatial_transform(img) for img in video_frames]
+
+            video_frames = torch.stack(video_frames, 0)
+            clips[direction] = video_frames
+
+            if self.target_transform is not None:
+                target_frames = [self.target_transform(img) for img in target_frames]
+            target_frames = torch.stack(target_frames, 0).permute(1, 0, 2, 3).squeeze()
+            targets[direction] = target_frames
+
+        return clips, targets
+
+
+
     def __len__(self):
         return len(self.data)

@@ -104,13 +104,23 @@ class Decoder(nn.Module):
             setattr(self, name, conv)
             self._all_layers.append(conv)
 
-    def forward(self, input):
-    	output = []
-    	for i in range(self.num_step):
-    		name = 'conv{}'.format(i)
-    		y = getattr(self, name)(input[i])
-    		output.append(y)
-    	return output
+    def forward(self, inputs):
+        # inputs가 [배치 크기, 채널, 높이, 너비] 형태일 경우, [배치 크기, 1, 채널, 높이, 너비]로 변환
+        if inputs.dim() == 4:
+            inputs = inputs.unsqueeze(1)  # 시간 차원 추가
+        
+        batch_size, num_steps, _, height, width = inputs.size()
+        outputs = []
+
+        for i in range(num_steps):
+            x = inputs[:, i, :, :, :]  # [배치 크기, 채널, 높이, 너비]
+            y = self._all_layers[i % len(self._all_layers)](x)
+            outputs.append(y.unsqueeze(1))  # 시간 차원 추가
+
+        output_tensor = torch.cat(outputs, dim=1)  # [배치 크기, 시간 단계, 채널, 높이, 너비]
+        # 시간 차원을 배치 차원에 합치기 위해 view 사용
+        output_tensor = output_tensor.view(batch_size * num_steps, 3, height, width)
+        return output_tensor
 
 class Encoder(nn.Module):
     def __init__(self, hidden_channels, sample_size, sample_duration):
@@ -155,11 +165,12 @@ class Encoder(nn.Module):
             
         # )
 ################## With output decoder
-        # self.decoder = Decoder(sample_duration, 32)
+        # self.decoder = Decoder(16, 32)
     def forward(self, x):
         b,t,c,h,w = x.size()
         x = x.permute(1,0,2,3,4)
         output_convlstm, _ = self.convlstm(x)
+        
         # x = self.decoder(output_convlstm[0])
         x = self.conv2(output_convlstm[0])
         # x = self.conv_block(x)

@@ -12,10 +12,11 @@ from spatial_transforms import (
     MultiScaleRandomCrop, RandomHorizontalFlip, ToTensor, DriverFocusCrop, DriverCenterCrop)
 from temporal_transforms import LoopPadding, TemporalRandomCrop, TemporalCenterCrop, UniformRandomSample, UniformEndSample, UniformIntervalCrop
 
-from target_transforms import ClassLabel
+from target_transforms import ClassLabel, VideoID
+from target_transforms import Compose as TargetCompose
 from torch.autograd import Variable
 from mean import get_mean, get_std
-from models.convolution_lstm import encoder, classifier
+from models.convolution_lstm import encoder,classifier
 from utils import AverageMeter, calculate_accuracy
 import warnings
 from tqdm import tqdm
@@ -25,6 +26,7 @@ from torch.optim import lr_scheduler
 import time
 from utils import Logger
 from torch.utils.tensorboard import SummaryWriter
+import torch.nn.functional as F
 
 
 
@@ -85,6 +87,21 @@ class conv_classifier(nn.Module):
         return x
     
 
+class AttentionModule(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(AttentionModule, self).__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.attention_fc = nn.Linear(self.input_dim, self.output_dim)
+        
+    def forward(self, x):
+        # x: [batch_size, n_directions, features]
+        attention_weights = F.softmax(self.attention_fc(x), dim=1)
+        # attention_weights: [batch_size, n_directions, 1]
+        output = torch.sum(x * attention_weights, dim=1)
+        # output: [batch_size, features]
+        return output, attention_weights
+    
 
 
 if __name__ == '__main__':
@@ -140,7 +157,8 @@ if __name__ == '__main__':
             batch_size=opt.batch_size,
             shuffle=True,
             num_workers=opt.n_threads,
-            pin_memory=True)
+            pin_memory=True,
+            drop_last=True)
         train_logger_inside = Logger(
             os.path.join(opt.result_path_inside, 'train_inside.log'),
             ['epoch', 'loss', 'acc', 'lr'])
@@ -167,7 +185,8 @@ if __name__ == '__main__':
             batch_size=opt.batch_size,
             shuffle=False,
             num_workers=opt.n_threads,
-            pin_memory=True)
+            pin_memory=True,
+            drop_last=True)
         val_logger_inside = Logger(
             os.path.join(opt.result_path_inside, 'val_inside.log'), ['epoch', 'loss', 'acc'])
         val_logger_classifier = Logger(
@@ -255,7 +274,8 @@ if __name__ == '__main__':
             batch_size=opt.batch_size,
             shuffle=True,
             num_workers=opt.n_threads,
-            pin_memory=True)
+            pin_memory=True,
+            drop_last=True)
     train_logger_outside = Logger(
 		os.path.join(opt.result_path_outside, 'train_outside.log'),
 		['epoch', 'loss', 'lr'])
@@ -279,7 +299,8 @@ if __name__ == '__main__':
             batch_size=opt.batch_size,
             shuffle=False,
             num_workers=opt.n_threads,
-            pin_memory=True)
+            pin_memory=True,
+            drop_last=True)
         val_logger_outside = Logger(
             os.path.join(opt.result_path_outside, 'val_outside.log'), ['epoch', 'loss'])
     
@@ -369,19 +390,81 @@ if __name__ == '__main__':
                 acc_in = calculate_accuracy(outputs_in, targets_in)
                 
                 model_outside.train()
+
+                
                 # outside 훈련 과정 실행
-                if not opt.no_cuda:
-                    targets_out = targets_out.cuda(non_blocking=True)
-                inputs_out = Variable(inputs_out)
-                targets_out = Variable(targets_out)
-                targets_out = targets_out.to(device)
+                """
+                Consider only flir4(forward) direction
+                """
+                # if not opt.no_cuda:
+                #     targets_out = targets_out['flir4'].cuda(non_blocking=True)
+
+                # # inputs_out = Variable(inputs_out)
+                # #targets_out = Variable(targets_out)
+                    
+                # inputs_out = inputs_out['flir4'].to(device)
+                # targets_out = targets_out.to(device)
                 
-                outputs_out = model_outside(inputs_out)
-                loss_out = criterion_outside(outputs_out, targets_out)
+                # outputs_out = model_outside(inputs_out)
+                # loss_out = criterion_outside(outputs_out, targets_out)
                 
+
+                """
+                Simply Consider 4 direction
+                """
+
+                # 각 방향별 훈련 결과와 가중치 적용
+
+                
+                weighted_outputs = []
+                total_loss_out =0
+                for direction in ['flir4', 'flir1', 'flir2', 'flir3']:
+                    if not opt.no_cuda:
+                        targets_out = targets_out[direction].cuda(non_blocking=True)
+                    inputs_outs = inputs_out[direction].to(device)
+                    targets_outs = targets_out[direction].to(device)
+                    
+                    # 각 방향별 모델 실행
+                    outputs_out = model_outside(inputs_outs)
+                    loss_out = criterion_outside(outputs_out, targets_outs)
+                    if direction == 'flir4':
+                        total_loss_out += loss_out * 2
+                    
+                    
+                    weighted_outputs.append(outputs_out)
+
+                # 가중치가 적용된 출력을 합침
+                outputs_out_combined = torch.sum(torch.stack(weighted_outputs), dim=0)
+
+                
+
+
+                """
+                Consider 4 direction using Attention module
+                """
+
+                #어텐션 모듈 초기화
+                # attention_module = AttentionModule(input_dim=512, output_dim=1).to(device)
+
+                # # 모델 훈련 과정에서 각 방향별 출력 준비
+                # # 예를 들어, outputs_out이 각 방향별 출력을 포함하는 딕셔너리라고 가정
+                # direction_outputs = [outputs_out[direction] for direction in ['flir4', 'flir1', 'flir2', 'flir3']]
+                # direction_outputs_stack = torch.stack(direction_outputs, dim=1)
+                # # direction_outputs_stack: [batch_size, n_directions, features]
+
+                # # 어텐션 적용
+                # outputs_out_combined, attention_weights = attention_module(direction_outputs_stack)
+
+                # # 통합된 출력을 최종 분류기에 입력
+                # output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
+
+
+
                 My_Conv_classifier.train()
                 # classifier 훈련 과정 실행
-                output = My_Conv_classifier(outputs_in_not_fc, outputs_out)
+                # output = My_Conv_classifier(outputs_in_not_fc, outputs_out)
+                # Simply Consider 4 direction
+                output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
                 loss_classifier = criterion_classifier(output, targets_in)
                 acc = calculate_accuracy(output, targets_in)
                 avg_acc.append(acc)
@@ -389,7 +472,7 @@ if __name__ == '__main__':
                 
                 # loss update
                 losses_inside_train.update(loss_in.item(), inputs_in.size(0))
-                losses_outside_train.update(loss_out.item(), inputs_out.size(0))
+                losses_outside_train.update(loss_out.item(), inputs_out['flir4'].size(0))
                 
                 accuracies_inside_train.update(acc_in, inputs_in.size(0))
                 
@@ -399,7 +482,7 @@ if __name__ == '__main__':
                 optimizer_classifier.zero_grad()
                 
                 loss_in.backward(retain_graph=True)
-                loss_out.backward(retain_graph=True)
+                total_loss_out.backward(retain_graph=True)
                 loss_classifier.backward()
                 
                 optimizer_inside.step()
@@ -523,8 +606,9 @@ if __name__ == '__main__':
                     
                     # outside 검증 과정 실행
                     if not opt.no_cuda:
-                        targets_out = targets_out.cuda(non_blocking=True)
-                    inputs_out = inputs_out.to(device)
+                        targets_out = targets_out['flir4'].cuda(non_blocking=True)
+
+                    inputs_out = inputs_out['flir4'].to(device)
                     targets_out = targets_out.to(device)
                     
                     outputs_out = model_outside(inputs_out)

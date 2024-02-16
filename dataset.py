@@ -34,8 +34,8 @@ def get_training_set_outside(opt, spatial_transform, horizontal_flip, temporal_t
         10,
         spatial_transform=spatial_transform,
         horizontal_flip=horizontal_flip,
-        target_transform=target_transform,
-        temporal_transform=temporal_transform)
+        temporal_transform=temporal_transform,
+        target_transform=target_transform)
 
     return training_data_outside
 
