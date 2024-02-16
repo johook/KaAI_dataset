@@ -15,6 +15,7 @@ from utils import load_value_file
 
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+import pandas as pd
 
 
 def pil_loader(path):
@@ -183,6 +184,7 @@ def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video, e
                     sample['frame_indices'] = list(range(1, n_frames+1))
                     sample_j = copy.deepcopy(sample)
                     dataset.append(sample_j)
+
     return dataset, idx_to_class
 
 def make_dataset_outside(root_path, annotation_path, subset, n_samples_for_each_video, end_second,
@@ -425,3 +427,94 @@ class Brain4cars_Outside(data.Dataset):
 
     def __len__(self):
         return len(self.data)
+    
+
+def make_dataset_gaze(annotation_path, subset, fold):
+    """
+    Gaze 데이터를 로딩하기 위한 함수.
+    
+    Args:
+        annotation_path (str): Annotation 파일의 경로.
+        subset (str): 데이터셋의 부분 집합 ('training', 'validation', 'test').
+        fold (int): 사용할 fold 번호.
+    
+    Returns:
+        list: 데이터셋을 구성하는 샘플들의 리스트.
+    """
+    # Annotation 데이터 로딩
+    if subset != "test":
+        data = load_annotation_data(annotation_path, fold)
+    else:
+        data = test_load_annotation_data(annotation_path, fold)
+
+    video_names, annotations = get_video_names_and_annotations(data, subset)
+
+    class_to_idx = get_class_labels()
+    idx_to_class = {}
+    for name, label in class_to_idx.items():
+        idx_to_class[label] = name
+
+    dataset = []
+    for i, video_name in enumerate(video_names):
+        gaze_data_path = os.path.join(annotation_path,'Gaze&CAN',video_name,"Gaze_point.csv")  # 가정: Gaze 데이터 파일명
+        if not os.path.exists(gaze_data_path):
+            print(f"Gaze data file does not exist: {gaze_data_path}")
+            continue
+
+        # Gaze 데이터 로딩
+        gaze_data = pd.read_csv(gaze_data_path)
+        # Gaze 데이터 형식에 따라 필요한 처리 수행
+
+        # 데이터셋 샘플 생성
+        sample = {
+            'video_id': video_name,
+            'gaze_data': gaze_data,  # 여기서는 pandas DataFrame을 직접 사용하고 있으나, 필요에 따라 numpy 배열 등으로 변환 가능
+            'label': class_to_idx[annotations[i]['label']] if len(annotations) != 0 else -1
+        }
+
+        dataset.append(sample)
+    
+    return dataset, idx_to_class
+    
+class GazeDataset(data.Dataset):
+    def __init__(self, annotation_path, subset, fold):
+        """
+        Gaze 데이터셋을 위한 Dataset 클래스 초기화.
+        
+        Args:
+            annotation_path (str): Annotation 파일의 경로.
+            subset (str): 데이터셋의 부분 집합 ('training', 'validation', 'test').
+            fold (int): 사용할 fold 번호.
+        """
+        self.dataset, self.idx_to_class = make_dataset_gaze(annotation_path, subset, fold)
+        
+        
+    def __len__(self):
+        """데이터셋의 샘플 개수를 반환합니다."""
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        """
+        주어진 인덱스에 해당하는 샘플을 데이터셋에서 가져옵니다.
+        Args:
+            idx (int): 가져올 샘플의 인덱스.
+        Returns:
+            tuple: (gaze_data, label) - gaze 데이터와 레이블을 포함하는 튜플.
+        """
+        sample = self.dataset[idx]
+        gaze_data = sample['gaze_data'].values  # DataFrame을 numpy 배열로 변환
+        label = sample['label']
+
+        # 여기에서 gaze 데이터에서 무작위로 15개의 프레임을 선택합니다.
+        if gaze_data.shape[0] > 20:
+            selected_indices = np.random.choice(gaze_data.shape[0], 20, replace=False)
+            gaze_data = gaze_data[selected_indices]
+        elif gaze_data.shape[0] < 20:
+            # 필요한 경우 여기에서 패딩을 추가할 수 있습니다.
+            pass
+        
+        # 데이터 타입 변환 (옵션)
+        gaze_data = torch.tensor(gaze_data, dtype=torch.float)
+        label = torch.tensor(label, dtype=torch.long)
+        
+        return gaze_data, label

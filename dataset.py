@@ -1,4 +1,4 @@
-from datasets.Brain4cars import Brain4cars_Inside, Brain4cars_Outside
+from datasets.Brain4cars import Brain4cars_Inside, Brain4cars_Outside, GazeDataset
 
 
 def get_training_set_inside(opt, spatial_transform, horizontal_flip, temporal_transform,
@@ -78,6 +78,26 @@ def get_validation_set_outside(opt, spatial_transform, temporal_transform,
         sample_duration=opt.sample_duration_outside)
 
     return validation_data_outside
+
+
+def get_training_set_gaze(opt):
+    training_data_gaze = GazeDataset(
+        opt.annotation_path,
+        'training',
+        opt.n_fold)
+
+    return training_data_gaze
+
+def get_validation_set_gaze(opt):
+    validation_data_gaze = GazeDataset(
+        opt.annotation_path,
+        'validation',
+        opt.n_fold)
+
+    return validation_data_gaze
+
+
+
 
 
 def get_testing_set_inside(opt, spatial_transform, temporal_transform,

@@ -6,7 +6,7 @@ import torch.nn as nn
 # from main_inside import train_inside
 from opts import parse_opts
 from model import generate_model
-from dataset import get_training_set_inside,get_training_set_outside, get_validation_set_inside, get_validation_set_outside
+from dataset import get_training_set_inside,get_training_set_outside, get_validation_set_inside, get_validation_set_outside, get_training_set_gaze, get_validation_set_gaze
 from spatial_transforms import (
     Compose, Normalize, Scale, CenterCrop, CornerCrop, MultiScaleCornerCrop,
     MultiScaleRandomCrop, RandomHorizontalFlip, ToTensor, DriverFocusCrop, DriverCenterCrop)
@@ -76,31 +76,65 @@ class conv_classifier(nn.Module):
             nn.ReLU(),
             nn.Softmax(dim=1) 
         )  
+        self.classifier_fc_with_gaze = nn.Sequential(
+            nn.Linear(3136, 2048),
+            nn.BatchNorm1d(2048),
+            nn.ReLU(),
+            nn.Linear(2048, 5),
+            nn.BatchNorm1d(5),
+            nn.ReLU(),
+            nn.Softmax(dim=1) 
+        )  
 
 
-    def forward(self, inside, outside):
+    def forward(self, inside, outside, gaze):
         out = self.conv_block(outside)
         out = out.view(out.size(0),-1)
-        combined = torch.cat((inside, out), dim=1)
-
-        x = self.classifier_fc(combined)
+        combined = torch.cat((inside, out,gaze), dim=1)
+        if gaze == None:
+            x = self.classifier_fc(combined)
+        else:
+            x = self.classifier_fc_with_gaze(combined)
         return x
     
 
-class AttentionModule(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(AttentionModule, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.attention_fc = nn.Linear(self.input_dim, self.output_dim)
+# class AttentionModule(nn.Module):
+#     def __init__(self, input_dim, output_dim):
+#         super(AttentionModule, self).__init__()
+#         self.input_dim = input_dim
+#         self.output_dim = output_dim
+#         self.attention_fc = nn.Linear(self.input_dim, self.output_dim)
         
+#     def forward(self, x):
+#         # x: [batch_size, n_directions, features]
+#         attention_weights = F.softmax(self.attention_fc(x), dim=1)
+#         # attention_weights: [batch_size, n_directions, 1]
+#         output = torch.sum(x * attention_weights, dim=1)
+#         # output: [batch_size, features]
+#         return output, attention_weights
+    
+    
+
+class GazePredictorLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers, num_classes,drop_rate):
+        super(GazePredictorLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.dropout = nn.Dropout(drop_rate)
+        self.fc = nn.Linear(hidden_dim, num_classes)
+        self.bn = nn.BatchNorm1d(num_classes)
+    
     def forward(self, x):
-        # x: [batch_size, n_directions, features]
-        attention_weights = F.softmax(self.attention_fc(x), dim=1)
-        # attention_weights: [batch_size, n_directions, 1]
-        output = torch.sum(x * attention_weights, dim=1)
-        # output: [batch_size, features]
-        return output, attention_weights
+        # LSTM은 입력 x와 함께 초기 hidden state(h_0)와 cell state(c_0)를 필요로 함
+        # h_0와 c_0는 default로 0으로 설정되어 있음
+        # x: (batch_size, seq_length, input_size)
+        out_not_fc, (h_n, c_n) = self.lstm(x)
+        
+        # 마지막 타임 스텝의 히든 스테이트를 선형 레이어로 전달
+        out_not_fc = out_not_fc[:, -1, :]
+        out_not_fc = self.dropout(out_not_fc)
+        out = self.fc(out_not_fc)
+        out = self.bn(out)
+        return out, out_not_fc
     
 
 
@@ -284,6 +318,8 @@ if __name__ == '__main__':
         ['epoch', 'batch', 'iter', 'loss', 'lr'])
     
     
+    
+    
     # outside 검증 데이터 증강 및 데이터 로더 부분
     if not opt.no_val_outside:
         val_spatial_transform = Compose([
@@ -339,6 +375,63 @@ if __name__ == '__main__':
         if not opt.no_train_outside:
             optimizer_outside.load_state_dict(checkpoint['optimizer'])
 
+
+
+    # gaze Train dataloader
+    training_data_gaze = get_training_set_gaze(opt)
+    train_loader_gaze = torch.utils.data.DataLoader(
+        training_data_gaze,
+        batch_size=opt.batch_size,
+        shuffle=True,
+        num_workers=opt.n_threads,
+        pin_memory=True,
+        drop_last=True
+    )
+    train_batch_logger_gaze = Logger(
+    os.path.join(opt.result_path_inside, 'train_batch_gaze.log'),
+    ['epoch', 'batch', 'iter', 'loss', 'acc', 'lr'])
+
+    # Gaze 모델의 에폭별 로깅을 위한 로거 초기화
+    train_logger_gaze = Logger(
+        os.path.join(opt.result_path_inside, 'train_gaze.log'),
+        ['epoch', 'loss', 'acc', 'lr'])
+    
+
+    # Gaze Validation dataloader
+    val_data_gaze = get_validation_set_gaze(opt)
+    val_loader_gaze = torch.utils.data.DataLoader(
+        val_data_gaze,
+        batch_size=opt.batch_size,
+        shuffle=True,
+        num_workers=opt.n_threads,
+        pin_memory=True,
+        drop_last=True
+    )
+    # Gaze 모델의 에폭별 로깅을 위한 로거 초기화
+    val_logger_gaze = Logger(
+        os.path.join(opt.result_path_inside, 'val_gaze.log'),
+        ['epoch', 'loss', 'acc'])
+
+
+    #Gaze 모델 불러오기
+    gaze_predictor = GazePredictorLSTM(input_dim=17, hidden_dim=64, num_layers=2, num_classes=5, drop_rate=0.5).to(device)
+    gaze_predictor = nn.DataParallel(gaze_predictor, device_ids=None)
+
+    criterion_gaze = nn.CrossEntropyLoss()
+    optimizer_gaze = torch.optim.Adam(gaze_predictor.parameters(), lr=1e-4)
+
+    def calculate_metrics(output, target):
+        _, predicted = torch.max(output.data, 1)
+        correct = (predicted == target).sum().item()
+        total = target.size(0)
+        accuracy = correct / total
+        # 여기에 정밀도, 재현율, F1 점수 등 추가 계산 가능
+        return accuracy
+    
+
+
+
+
     My_Conv_classifier = conv_classifier().to(device)
     
     weights = [1, 2, 4, 2, 4]
@@ -357,9 +450,14 @@ if __name__ == '__main__':
     best_loss_outside = 100
     best_prec_classifier = 0
     
+    iter_loader_gaze = iter(train_loader_gaze)
+
     for epoch in range(opt.n_epochs + 1):  
+        torch.backends.cudnn.enabled=False
         avg_acc = []
-        avg_loss = []          
+        avg_loss = [] 
+        avg_acc_gaze = []
+        avg_loss_gaze = []         
         
         if not opt.no_train_inside and not opt.no_train_outside:
             # print('train_inside at epoch {}'.format(epoch))
@@ -370,6 +468,8 @@ if __name__ == '__main__':
             # print('train_outside at epoch {}'.format(epoch))
             
             losses_outside_train = AverageMeter()
+            losses_gaze_train = AverageMeter()
+            accuracies_gaze_train = AverageMeter()
             
             # print('train_classifier at epoch {}'.format(epoch))
             
@@ -377,8 +477,18 @@ if __name__ == '__main__':
             data_loader_train = tqdm(zip(train_loader, train_loader_outside), total=len(train_loader), desc = "Training")
             # inside, outside 훈련 과정 실행
             for i, ((inputs_in, targets_in), (inputs_out, targets_out)) in enumerate(data_loader_train):
-                model_inside.train()
+
+                #Because of the diffenrence between in,out dataloader and gaze dataloader
+                try:
+                    inputs_gaze, targets_gaze = next(iter_loader_gaze)
+                except StopIteration:
+                    # Gaze 데이터셋의 끝에 도달했을 경우, 반복자를 다시 생성
+                    iter_loader_gaze = iter(train_loader_gaze)
+                    inputs_gaze, targets_gaze = next(iter_loader_gaze)
+
+                
                 # inside 훈련 과정 실행
+                model_inside.train()
                 if not opt.no_cuda:
                     targets = targets_in.cuda(non_blocking=True)
                 inputs_in = Variable(inputs_in)
@@ -389,10 +499,11 @@ if __name__ == '__main__':
                 loss_in = criterion_inside(outputs_in, targets_in)
                 acc_in = calculate_accuracy(outputs_in, targets_in)
                 
-                model_outside.train()
+                
 
                 
                 # outside 훈련 과정 실행
+                model_outside.train()
                 """
                 Consider only flir4(forward) direction
                 """
@@ -458,11 +569,28 @@ if __name__ == '__main__':
                 # outputs_out_combined, attention_weights = attention_module(direction_outputs_stack)
                 
 
+                """
+                Training Gazepoint
+                """
+
+                # gaze 훈련 과정 실행
+                inputs_gaze = inputs_gaze.to(device)
+                targets_gaze = targets_gaze.to(device)  # 타겟 클래스 인덱스가 제공된다고 가정
+                outputs_gaze,outputs_gaze_not_fc = gaze_predictor(inputs_gaze)
+                loss_gaze = criterion_gaze(outputs_gaze, targets_gaze)
+                acc_gaze = calculate_accuracy(outputs_gaze, targets_gaze)
+                avg_acc_gaze.append(acc_gaze)
+                avg_loss_gaze.append(loss_gaze.item())
 
 
-                My_Conv_classifier.train()
+
+
+
+
+                
                 # classifier 훈련 과정 실행
-                output = My_Conv_classifier(outputs_in_not_fc, outputs_out)
+                My_Conv_classifier.train()
+                output = My_Conv_classifier(outputs_in_not_fc, outputs_out, outputs_gaze_not_fc)
                 # Simply Consider 4 direction
                 # output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
                 # output = My_Conv_classifier(outputs_in_not_fc, outputs_out_combined)
@@ -474,20 +602,38 @@ if __name__ == '__main__':
                 # loss update
                 losses_inside_train.update(loss_in.item(), inputs_in.size(0))
                 losses_outside_train.update(loss_out.item(), inputs_out.size(0))
+                losses_gaze_train.update(loss_gaze.item(), inputs_gaze.size(0))
+                accuracies_gaze_train.update(acc_gaze, inputs_gaze.size(0))
                 
                 accuracies_inside_train.update(acc_in, inputs_in.size(0))
+
+                """
+                Calculate loss plus
+                """
+                total_loss = loss_in + loss_out + loss_gaze + loss_classifier
                 
                 # optimizer update
                 optimizer_inside.zero_grad()
                 optimizer_outside.zero_grad()
+                optimizer_gaze.zero_grad()
                 optimizer_classifier.zero_grad()
                 
-                loss_in.backward(retain_graph=True)
-                loss_out.backward(retain_graph=True)
-                loss_classifier.backward()
+                """
+                Calculate each loss 
+                """
+                # loss_in.backward(retain_graph=True)
+                # loss_out.backward(retain_graph=True)
+                # loss_gaze.backward()
+                # loss_classifier.backward()
+
+                total_loss.backward()
+
+                
+
                 
                 optimizer_inside.step()
                 optimizer_outside.step()
+                optimizer_gaze.step()
                 optimizer_classifier.step()
                
                 writer.add_scalar('Training Loss Inside', losses_inside_train.avg, epoch)
@@ -497,7 +643,7 @@ if __name__ == '__main__':
 
                 
 
-                
+                data_loader_train.set_postfix(loss_gaze=losses_gaze_train.val, acc_gaze=accuracies_gaze_train.val)
                 data_loader_train.set_postfix(loss=loss_classifier.item(), acc=acc)
                 
                 # logger update
@@ -516,6 +662,15 @@ if __name__ == '__main__':
                     'loss': losses_outside_train.val,
                     'lr': optimizer_outside.param_groups[0]['lr']
                 })
+                train_batch_logger_gaze.log({
+                'epoch': epoch,
+                'batch': i + 1,
+                'iter': (epoch - 1) * len(train_loader_gaze) + (i + 1),
+                'loss': losses_gaze_train.val,
+                'acc': accuracies_gaze_train.val,
+                'lr': optimizer_gaze.param_groups[0]['lr']
+            })
+                
                 
                 
             print('Epoch_inside: [{0}][{1}/{2}]\t'
@@ -532,6 +687,11 @@ if __name__ == '__main__':
                                 i + 1,
                                 len(train_loader_outside),
                                 loss=losses_outside_train))
+            
+            avg_acc_value_gaze = sum(avg_acc_gaze) / len(avg_acc_gaze)
+            avg_loss_value_gaze = sum(avg_loss_gaze) / len(avg_loss_gaze)
+            print(f"Epoch_gaze [{epoch}/{opt.n_epochs}], Loss: {avg_loss_value_gaze}, Avg Acc: {avg_acc_value_gaze}")
+            
             avg_acc_value_train = sum(avg_acc) / len(avg_acc)
             avg_loss_value_train = sum(avg_loss) / len(avg_loss)
             print(f"Epoch_classifier [{epoch}/{opt.n_epochs}], Loss: {avg_loss_value_train}, avg_acc: {avg_acc_value_train}")
@@ -547,6 +707,12 @@ if __name__ == '__main__':
                     'loss': avg_loss_value_train,
                     'acc': avg_acc_value_train
                 })
+            train_logger_gaze.log({
+            'epoch': epoch,
+            'loss': losses_gaze_train.avg,
+            'acc': accuracies_gaze_train.avg,
+            'lr': optimizer_gaze.param_groups[0]['lr']
+        })
 
             if epoch % opt.checkpoint == 0:
                 save_file_path_inside = os.path.join(opt.result_path_inside,
@@ -576,8 +742,11 @@ if __name__ == '__main__':
             writer.add_scalar('Training Loss Classifier', avg_acc_value_train, epoch)
             writer.add_scalar('Training Accuracy Classifier', avg_loss_value_train, epoch)
         ################################################################################################################
+        
         avg_acc_val = []
         avg_loss_val = []
+        avg_acc_gaze_val = []
+        avg_loss_gaze_val = []
         if not opt.no_val_inside and not opt.no_val_outside:
             # print('validation_inside at epoch {}'.format(epoch))
             model_inside.eval()
@@ -587,14 +756,30 @@ if __name__ == '__main__':
             # print('validation_outside at epoch {}'.format(epoch))
             model_outside.eval()
             losses_outside = AverageMeter()
+
+            gaze_predictor.eval()
+            losses_gaze_val = AverageMeter()
+            accuracies_gaze_val = AverageMeter()
             
             # print('validation_classifier at epoch {}'.format(epoch))
             My_Conv_classifier.eval()
             
             data_loader_val = tqdm(zip(val_loader, val_loader_outside), total=len(val_loader), desc = "Validation")
             # inside, outside 검증 과정 실행
+
+            iter_loader_gaze = iter(val_loader_gaze)
+
             with torch.no_grad():
                 for i, ((inputs_in, targets_in), (inputs_out, targets_out)) in enumerate(data_loader_val):
+
+                    try:
+                        inputs_gaze, targets_gaze = next(iter_loader_gaze)
+                    except StopIteration:
+                        # Gaze 데이터셋의 끝에 도달했을 경우, 반복자를 다시 생성하고 계속 진행
+                        iter_loader_gaze = iter(val_loader_gaze)
+                        inputs_gaze, targets_gaze = next(iter_loader_gaze)
+
+
                     # inside 검증 과정 실행
                     if not opt.no_cuda:
                         targets = targets_in.cuda(non_blocking=True)
@@ -614,9 +799,19 @@ if __name__ == '__main__':
                     
                     outputs_out = model_outside(inputs_out)
                     loss_out = criterion_outside(outputs_out, targets_out)
+
+
+                    # Gaze 모델의 검증 과정
+                    inputs_gaze = inputs_gaze.to(device)
+                    targets_gaze = targets_gaze.to(device)
+                    outputs_gaze, outputs_gaze_not_fc = gaze_predictor(inputs_gaze)
+                    loss_gaze = criterion_gaze(outputs_gaze, targets_gaze)
+                    acc_gaze = calculate_accuracy(outputs_gaze, targets_gaze)
+                    avg_acc_gaze_val.append(acc_gaze)
+                    avg_loss_gaze_val.append(loss_gaze.item())
                     
                     # classifier 검증 과정 실행
-                    output = My_Conv_classifier(outputs_in_not_fc, outputs_out)
+                    output = My_Conv_classifier(outputs_in_not_fc, outputs_out, outputs_gaze_not_fc)
                     loss_classifier = criterion_classifier(output, targets_in)
                     acc = calculate_accuracy(output, targets_in)
                     avg_acc_val.append(acc)
@@ -625,11 +820,16 @@ if __name__ == '__main__':
                     # loss update
                     losses_inside.update(loss_in.item(), inputs_in.size(0))
                     losses_outside.update(loss_out.item(), inputs_out.size(0))
+                    losses_gaze_val.update(loss_gaze.item(), inputs_gaze.size(0))
+                    accuracies_gaze_val.update(acc_gaze, inputs_gaze.size(0))
                     accuracies_inside.update(acc_in, inputs_in.size(0))
+
 
                     writer.add_scalar('Validation Loss Inside', losses_inside.avg, epoch)
                     writer.add_scalar('Validation Accuracy Inside', accuracies_inside.avg, epoch)
                     writer.add_scalar('Validation Loss Outside', losses_outside.avg, epoch)
+                    writer.add_scalar('Validation Loss Gaze', losses_gaze_val.avg, epoch)
+                    writer.add_scalar('Validation Accuracy Gaze', accuracies_gaze_val.avg, epoch)
                     
                     data_loader_val.set_postfix(loss=loss_classifier.item(), acc=acc)
                 
@@ -648,6 +848,9 @@ if __name__ == '__main__':
                                 i + 1,
                                 len(val_loader_outside),
                                 loss=losses_outside))
+            avg_acc_gaze_value = sum(avg_acc_gaze_val) / len(avg_acc_gaze_val)
+            avg_loss_gaze_value = sum(avg_loss_gaze_val) / len(avg_loss_gaze_val)
+            print(f"Epoch_gaze: Gaze Loss: {avg_loss_gaze_value}, Gaze Accuracy: {avg_acc_gaze_value}")
             
             avg_acc_value = sum(avg_acc_val) / len(avg_acc_val)
             avg_loss_value = sum(avg_loss_val) / len(avg_loss_val)
@@ -664,6 +867,9 @@ if __name__ == '__main__':
                         'loss': avg_loss_value,
                         'acc': avg_acc_value,
                     })
+            
+            val_logger_gaze.log({'epoch': epoch, 'loss': losses_gaze_val.avg, 'acc': accuracies_gaze_val.avg})
+
 
             val_logger_outside.log({
                 'epoch': epoch,
@@ -721,6 +927,7 @@ if __name__ == '__main__':
         if not opt.no_train_inside and not opt.no_train_outside and not opt.no_val_inside and not opt.no_val_outside:
             scheduler_inside.step()
             scheduler_outside.step() 
+        torch.backends.cudnn.enabled=False
     
     print(f'Test Accuracy: {best_prec_classifier:.4f}')
             

@@ -25,7 +25,7 @@ CUDA_VISIBLE_DEVICES=0 python real_model_total_original.py \
 			   --train_crop 'driver focus'\
 			   --n_scales_inside 3 \
 			   --n_scales_outside 1 \
-			   --learning_rate 0.0005 \
+			   --learning_rate 0.001 \
 			   --n_fold 0 \
 			   --sample_duration_inside 16 \
 			   --sample_duration_outside 5 \
