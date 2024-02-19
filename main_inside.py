@@ -40,7 +40,7 @@ if __name__ == '__main__':
     opt.scales = [opt.initial_scale]
     for i in range(1, opt.n_scales_inside):
         opt.scales.append(opt.scales[-1] * opt.scale_step)
-    opt.arch = '{}-{}'.format(opt.model, opt.model_depth)
+    opt.arch_inside = '{}-{}'.format(opt.model, opt.model_depth)
     opt.mean = get_mean(opt.norm_value_inside, dataset=opt.mean_dataset)
     opt.std = get_std(opt.norm_value_inside)
     print(opt)
@@ -64,7 +64,7 @@ if __name__ == '__main__':
     else:
         norm_method = Normalize(opt.mean, opt.std)
     #data 전처리(증강) -> 여기서는 driver focus를 사용하여 운전자 자리를 좀 더 집중하여 crop 해줌
-    if not opt.no_train: 
+    if not opt.no_train_inside: 
         assert opt.train_crop in ['random', 'corner', 'center', 'driver focus']
         if opt.train_crop == 'random':
             crop_method = MultiScaleRandomCrop(opt.scales, opt.sample_size)
@@ -91,7 +91,8 @@ if __name__ == '__main__':
             batch_size=opt.batch_size,
             shuffle=True,
             num_workers=opt.n_threads,
-            pin_memory=True)
+            pin_memory=True,
+            drop_last=True)
         train_logger = Logger(
             os.path.join(opt.result_path_inside, 'train.log'),
             ['epoch', 'loss', 'acc', 'lr'])
@@ -112,7 +113,7 @@ if __name__ == '__main__':
         nesterov=opt.nesterov)
     scheduler = lr_scheduler.MultiStepLR(
         optimizer, milestones=opt.lr_step, gamma=0.1)
-    if not opt.no_val:
+    if not opt.no_val_inside:
         val_spatial_transform = Compose([
             DriverCenterCrop(opt.scales, opt.sample_size),
             ToTensor(opt.norm_value_inside), norm_method
@@ -126,18 +127,19 @@ if __name__ == '__main__':
             batch_size=24,
             shuffle=False,
             num_workers=opt.n_threads,
-            pin_memory=True)
+            pin_memory=True,
+            drop_last=True)
         val_logger = Logger(
             os.path.join(opt.result_path_inside, 'val.log'), ['epoch', 'loss', 'acc'])
 
     if opt.resume_path_inside:
         print('loading checkpoint {}'.format(opt.resume_path_inside))
         checkpoint = torch.load(opt.resume_path_inside)
-        assert opt.arch == checkpoint['arch']
+        assert opt.arch_inside == checkpoint['arch']
 
         opt.begin_epoch = checkpoint['epoch']
         model.load_state_dict(checkpoint['state_dict'])
-        if not opt.no_train:
+        if not opt.no_train_inside:
             optimizer.load_state_dict(checkpoint['optimizer'])
 
     print('run')
@@ -145,7 +147,7 @@ if __name__ == '__main__':
     best_prec = 0
     for epoch in range(opt.begin_epoch, opt.n_epochs + 1):
 
-        if not opt.no_train:
+        if not opt.no_train_inside:
             print('train at epoch {}'.format(epoch))
 
             model.train()
@@ -164,7 +166,8 @@ if __name__ == '__main__':
                     targets = targets.cuda(non_blocking=True)
                 inputs = Variable(inputs)
                 targets = Variable(targets)
-                outputs = model(inputs)
+                # targets = targets.to(device)
+                outputs,outputs_not_fc = model(inputs)
                 loss = criterion(outputs, targets)
                 acc = calculate_accuracy(outputs, targets)
 
@@ -212,12 +215,12 @@ if __name__ == '__main__':
                                             'save_{}.pth'.format(epoch))
                 states = {
                     'epoch': epoch + 1,
-                    'arch': opt.arch,
+                    'arch': opt.arch_inside,
                     'state_dict': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
                 }
 
-        if not opt.no_val:
+        if not opt.no_val_inside:
             print('Validation at epoch {}'.format(epoch))
 
             model.eval()
@@ -237,9 +240,11 @@ if __name__ == '__main__':
 
                 if not opt.no_cuda:
                     targets = targets.cuda(non_blocking=True)
-                inputs = Variable(inputs, volatile=True)
-                targets = Variable(targets, volatile=True)
-                outputs = model(inputs)
+                    
+                with torch.no_grad():
+                    inputs = inputs
+                    targets = targets
+                outputs, outputs_not_fc = model(inputs)
                 loss = criterion(outputs, targets)
                 acc = calculate_accuracy(outputs, targets)
 
@@ -277,7 +282,7 @@ if __name__ == '__main__':
             if is_best:
                 states = {
                     'epoch': epoch + 1,
-                    'arch': opt.arch,
+                    'arch': opt.arch_inside,
                     'state_dict': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
                 }
@@ -285,9 +290,5 @@ if __name__ == '__main__':
                                     'save_best.pth')
                 torch.save(states, save_file_path)
 
-        if not opt.no_train and not opt.no_val:
+        if not opt.no_train_inside and not opt.no_val_inside:
             scheduler.step()
-                
-
-
-
